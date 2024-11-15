@@ -83,7 +83,7 @@ class DraggablePiece(Image):
         super().__init__(**kwargs)
         self.piece_type = piece_type
         self.piece_color = color
-        self.source = f'/data/user/0/ru.iiec.pydroid3/files/chess_pieces/{color}_{piece_type}.png'
+        self.source = f'chess_pieces/{color}_{piece_type}.png'
         self.size_hint = (None, None)
         self.size = (dp(50), dp(50))
         self.dragging = False
