@@ -18,6 +18,7 @@ from PIL import Image as PILImage
 from PIL.ImageOps import flip
 import io
 import sympy as sp
+import scipy as sci
 
 if True:
 	rook=sp.KroneckerProduct(sp.ones(8,8),sp.eye(8))+sp.KroneckerProduct(sp.eye(8),sp.ones(8,8))-sp.eye(64)*16
@@ -55,6 +56,10 @@ if True:
 	zblackpawn=sp.Matrix(np.multiply(np.greater(nblackpawn,0),nblackpawn))
 	nwhitepawn=np.array(whitepawn)
 	zwhitepawn=sp.Matrix(np.multiply(np.greater(nwhitepawn,0),nwhitepawn))
+	nblackpawnatk=np.array(blackpawnatk)
+	zblackpawnatk=sp.Matrix(np.multiply(np.greater(nblackpawnatk,0),nblackpawnatk))
+	nwhitepawnatk=np.array(whitepawnatk)
+	zwhitepawnatk=sp.Matrix(np.multiply(np.greater(nwhitepawnatk,0),nwhitepawnatk))
 	piece_moveset={
 		'queen': (7,znorth,zeast,zsouth,zwest,znortheast,znorthwest,zsouthwest,zsoutheast),
 		'knight': (1,zknight),
@@ -68,8 +73,8 @@ if True:
 		'zrook': zrook,
 		'blackpawn': (1,zblackpawn),
 		'whitepawn': (1,zwhitepawn),
-		'blackpawnatk': blackpawnatk,
-		'whitepawnatk': whitepawnatk
+		'blackpawnatk': zblackpawnatk,
+		'whitepawnatk': zwhitepawnatk
 	}
 	
 	"""
@@ -83,7 +88,8 @@ class DraggablePiece(Image):
         super().__init__(**kwargs)
         self.piece_type = piece_type
         self.piece_color = color
-        self.source = f'chess_pieces/{color}_{piece_type}.png'
+        #self.source = f'/data/user/0/ru.iiec.pydroid3/files/chess_pieces/{color}_{piece_type}.png'
+        self.source=f'/storage/emulated/0/PydroidCode/chess_pieces/{color}_{piece_type}.png'
         self.size_hint = (None, None)
         self.size = (dp(50), dp(50))
         self.dragging = False
@@ -239,7 +245,7 @@ class ChessBoard(Widget):
                     	enemy_riders.append((square.occupied_piece,idx))
                     else:
                     	if square.occupied_piece.piece_type == "pawn":
-                    		self.single_move_attack_vector*=1-np.array(piece_moveset[f"{square.occupied_piece.piece_color}pawnatk"],dtype="int")@(np.eye(64,dtype=int)[idx])
+                    		self.single_move_attack_vector*=1-(np.array(piece_moveset[f"{square.occupied_piece.piece_color}pawnatk"],dtype="int")@(np.eye(64,dtype=int)[idx]))
                     	else:
                     		self.single_move_attack_vector*=1-np.array(piece_moveset[f"z{square.occupied_piece.piece_type}"],dtype="int")@(np.eye(64,dtype=int)[idx])
                 if square.occupied_piece == clicked_piece:
@@ -267,7 +273,6 @@ class ChessBoard(Widget):
         return value
 
     def show_heatmap(self, piece):
-        plt.clf()
         state=np.diag(self.state_vector)
         if piece.piece_type != 'pawn':
         	moveset=piece_moveset[piece.piece_type]
@@ -280,28 +285,36 @@ class ChessBoard(Widget):
         	if piece.piece_type != 'pawn':
         	    taker=np.diag(self.enemy_territory_vector)@np.array(rider,dtype="int")
         	else:
-        		taker=np.zeros((64,64),dtype=int)
-        	self.adjacency+=(np.eye(64,dtype=int)+taker)@(np.eye(64,dtype=int)+sum([self.memoize(self.S[0]@collider) for i in range(moveset[0])],0*np.eye(64,dtype="int")))-np.eye(64,dtype=int)
-        if piece.piece_type == 'pawn':
-        	self.adjacency+=np.diag(self.enemy_territory_vector)@np.array(piece_moveset[f"{piece.piece_color}pawnatk"],dtype="int")
+        		taker=np.diag(self.enemy_territory_vector)@np.array(piece_moveset[f"{piece.piece_color}pawnatk"],dtype="int")
+        	if piece.piece_type not in ('pawn','knight','king'):
+        		self.adjacency+=(np.eye(64,dtype=int)+taker)@(np.eye(64,dtype=int)+sum([self.memoize(self.S[0]@collider) for i in range(moveset[0])],0*np.eye(64,dtype="int")))-np.eye(64,dtype=int)
+        	else:
+        		self.adjacency+=(taker+sum([self.memoize(self.S[0]@collider) for i in range(moveset[0])],0*np.eye(64,dtype="int")))
+        		
         self.adjacency=np.diag(self.rider_attack_vector)@self.adjacency
         self.adjacency=np.diag(self.single_move_attack_vector)@self.adjacency
+        Q=np.diag(np.ones(64,dtype="int")@self.adjacency)
         if self.quantum:
-            Q=np.diag(np.ones(64,dtype="int")@self.adjacency)
             self.adjacency-=Q
-        #self.adjacency=state@np.array(moveset,dtype="int")
-        self.S=[np.eye(64,dtype="int")]
-        if self.quantum:
-            self.heat_operator=sum([self.memoize(self.S[0]@self.adjacency*0.02j/(i+1)) for i in range(30)],0*np.eye(64,dtype="int"))
+            self.adjacency=self.adjacency@(np.linalg.inv(np.array(Q,dtype="float64")+np.eye(64,dtype="float64")))
         else:
-        	self.heat_operator=sum([self.memoize(self.S[0]@self.adjacency*0.02/(i+1)) for i in range(30)],0*np.eye(64,dtype="int"))
+        	self.adjacency=self.adjacency@(np.linalg.inv(np.array(Q,dtype="float64")+np.eye(64,dtype="float64")))
+        	
+        #self.adjacency=state@np.array(moveset,dtype="int")
+        self.S=[np.eye(64,dtype="float64")]
+        if self.quantum:
+            #self.heat_operator=sum([self.memoize(self.S[0]@self.adjacency*1j/(i+1)) for i in range(100)],np.eye(64,dtype="complex128"))
+            self.heat_operator=sci.linalg.expm(self.adjacency*0.2j)
+        else:
+        	self.heat_operator=sum([self.memoize(self.S[0]@self.adjacency*0.2/(i+1)) for i in range(100)],np.eye(64,dtype="float64"))
         self.heatwaveclock=Clock.schedule_interval(self.heatmapengine,1.0/50.0)
     
     def heatmapengine(self,dt):
+        plt.clf()
         self.position_vector=self.heat_operator@self.position_vector
         #heatmap=(self.position_vector).reshape(8,8)
         if self.quantum:
-            heatmap=np.array((np.conj(self.position_vector)*self.position_vector),dtype="float").reshape(8,8)
+            heatmap=np.array((np.conj(self.position_vector)*self.position_vector),dtype="float64").reshape(8,8)
         else:
         	heatmap=self.position_vector.reshape(8,8)
         #plt.imshow(heatmap/np.argmax(heatmap),cmap='hot',interpolation="nearest")
@@ -314,6 +327,7 @@ class ChessBoard(Widget):
         plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
         buf.seek(0)
         img = flip(PILImage.open(buf))
+        buf.close()
         
         self.canvas.after.clear()
         with self.canvas.after:
@@ -326,7 +340,7 @@ class ChessBoard(Widget):
         if self.heatwaveclock:
         	self.heatwaveclock.cancel()
         setattr(self, 'locked', not self.locked)
-        #setattr(self.parent.parent.button_layout.lock_button,'color',(1,0,1,1))
+        #setattr(self.parent.parent.children[2].children[1],'color',(1,1,0,1))
     
     def quantum_toggle(self):
         if self.heatwaveclock:
@@ -337,6 +351,8 @@ class ChessBoard(Widget):
         # Clear all pieces, including manually added ones
         if self.heatwaveclock:
         	self.heatwaveclock.cancel()
+        setattr(self.parent.parent.children[2].children[1],'state','normal')
+        setattr(self,'locked',False)
         pieces_to_remove = [child for child in self.children if isinstance(child, DraggablePiece)]
         
         for piece in pieces_to_remove:
