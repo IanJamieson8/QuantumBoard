@@ -12,13 +12,7 @@ from kivy.properties import ListProperty, BooleanProperty, ObjectProperty
 from kivy.metrics import dp
 from kivy.clock import Clock
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-from PIL import Image as PILImage
-from PIL.ImageOps import flip
-import io
 import sympy as sp
-import scipy as sci
 
 if True:
 	rook=sp.KroneckerProduct(sp.ones(8,8),sp.eye(8))+sp.KroneckerProduct(sp.eye(8),sp.ones(8,8))-sp.eye(64)*16
@@ -76,20 +70,13 @@ if True:
 		'blackpawnatk': zblackpawnatk,
 		'whitepawnatk': zwhitepawnatk
 	}
-	
-	"""
-	print(sum([zknight**i for i in range(2)],0*sp.eye(64)))
-	print(A:=np.array(sum([(zknight*0.8018288963**0)**i for i in range(3)],0*sp.eye(64))*np.array(sp.FunctionMatrix(64,1,'lambda i,j: KroneckerDelta(i,63)').as_explicit()),dtype="int").reshape((8,8)))
-	plt.imshow(A/np.argmax(A),cmap='hot',interpolation="nearest")
-	plt.show()"""
 
 class DraggablePiece(Image):
     def __init__(self, piece_type, color, board_ref, is_template=False, **kwargs):
         super().__init__(**kwargs)
         self.piece_type = piece_type
         self.piece_color = color
-        #self.source = f'/data/user/0/ru.iiec.pydroid3/files/chess_pieces/{color}_{piece_type}.png'
-        self.source=f'/storage/emulated/0/PydroidCode/chess_pieces/{color}_{piece_type}.png'
+        self.source=f'chess_pieces/{color}_{piece_type}.png'
         self.size_hint = (None, None)
         self.size = (dp(50), dp(50))
         self.dragging = False
@@ -97,6 +84,7 @@ class DraggablePiece(Image):
         self.board_ref = board_ref
         self.current_square = None
         self.is_template = is_template
+        self.last_tap_time=0
 
     def create_clone(self):
         clone = DraggablePiece(self.piece_type, self.piece_color, self.board_ref)
@@ -105,6 +93,22 @@ class DraggablePiece(Image):
         return clone
 
     def on_touch_down(self, touch):
+        # Cancel if touch is not within the piece
+        if not self.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+        
+        current_time = Clock.get_boottime()       
+        if (current_time - self.last_tap_time) < 0.3:  # 300 ms between taps
+            #Double-tap detected
+            self.dragging = False
+            touch.ungrab(self)
+            print(self.current_square)
+            self.current_square.occupied_piece = self
+            self.board_ref.piece_clicked(self)
+            self.last_tap_time = 0
+            return True
+        else:
+            self.last_tap_time = current_time
         if self.collide_point(*touch.pos) and not self.board_ref.locked:
             if self.is_template:
                 # Create and start dragging a clone
@@ -151,7 +155,6 @@ class DraggablePiece(Image):
             return True
         return super().on_touch_up(touch)
 
-
 class ChessSquare(Widget):
     def __init__(self, position, color, **kwargs):
         super().__init__(**kwargs)
@@ -181,7 +184,6 @@ class ChessBoard(Widget):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.squares = {}
-        self.heatmap_texture = None
         self.state_vector = None
         self.enemy_territory_vector=None
         self.single_move_attack_vector=None
@@ -191,6 +193,7 @@ class ChessBoard(Widget):
         self.heat_operator=None
         self.heatwaveclock=None
         self.quantum=False
+        self.analyzed_pieces=[]
         self.bind(pos=self.update_board, size=self.update_board)
         self.setup_board()
 
@@ -198,7 +201,6 @@ class ChessBoard(Widget):
         self.canvas.before.clear()
         with self.canvas.before:
             Color(1, 1, 1, 1)
-            #Rectangle(pos=self.pos, size=self.size)
             Window.clearcolor=(1,1,1,1)
         
         files = 'abcdefgh'
@@ -296,61 +298,70 @@ class ChessBoard(Widget):
         Q=np.diag(np.ones(64,dtype="int")@self.adjacency)
         if self.quantum:
             self.adjacency-=Q
-            self.adjacency=self.adjacency@(np.linalg.inv(np.array(Q,dtype="float64")+np.eye(64,dtype="float64")))
+            print(np.tensordot(np.array([[2,3],[5,7]]),np.broadcast_to(np.array([[1,1],[1,0]]),(2,2,2)),axes=1))
         else:
-        	self.adjacency=self.adjacency@(np.linalg.inv(np.array(Q,dtype="float64")+np.eye(64,dtype="float64")))
-        	
-        #self.adjacency=state@np.array(moveset,dtype="int")
+        	self.adjacency=self.adjacency@(np.linalg.inv(np.maximum(np.array(Q,dtype="float64"),np.eye(64,dtype="float64"))))
+        	pass
         self.S=[np.eye(64,dtype="float64")]
         if self.quantum:
-            #self.heat_operator=sum([self.memoize(self.S[0]@self.adjacency*1j/(i+1)) for i in range(100)],np.eye(64,dtype="complex128"))
-            self.heat_operator=sci.linalg.expm(self.adjacency*0.2j)
+            self.heat_operator=sum([self.memoize(self.S[0]@self.adjacency*0.2j/(i+1)) for i in range(100)],np.eye(64,dtype="complex128"))
         else:
         	self.heat_operator=sum([self.memoize(self.S[0]@self.adjacency*0.2/(i+1)) for i in range(100)],np.eye(64,dtype="float64"))
+        	
+        self.analyzed_pieces.append(piece)
         self.heatwaveclock=Clock.schedule_interval(self.heatmapengine,1.0/50.0)
     
     def heatmapengine(self,dt):
-        plt.clf()
+        piece=self.analyzed_pieces[-1]
         self.position_vector=self.heat_operator@self.position_vector
-        #heatmap=(self.position_vector).reshape(8,8)
         if self.quantum:
             heatmap=np.array((np.conj(self.position_vector)*self.position_vector),dtype="float64").reshape(8,8)
         else:
         	heatmap=self.position_vector.reshape(8,8)
-        #plt.imshow(heatmap/np.argmax(heatmap),cmap='hot',interpolation="nearest")
-        plt.imshow(heatmap,cmap='hot',interpolation="nearest")
-        #cmap = LinearSegmentedColormap.from_list('custom', ['white', 'red'])
-        #plt.imshow(heatmap, cmap=cmap)
-        plt.axis('off')
         
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
-        buf.seek(0)
-        img = flip(PILImage.open(buf))
-        buf.close()
+        heatmap = heatmap/np.max(heatmap) if np.max(heatmap) > 0 else heatmap
         
         self.canvas.after.clear()
+    
         with self.canvas.after:
-            Color(1, 1, 1, 0.8)
-            texture = kivy.graphics.texture.Texture.create(size=img.size)
-            texture.blit_buffer(img.tobytes(), colorfmt='rgba', bufferfmt='ubyte')
-            Rectangle(texture=texture, pos=self.pos, size=self.size)
+            Color(1, 1, 1, 1)
+            for rank in range(8):
+                for file in range(8):
+                    x = self.pos[0] + file * dp(50)
+                    y = self.pos[1] + (7 - rank) * dp(50)
+                
+                    opacity = heatmap[rank, file]
+                
+                    pos = f'{"abcdefgh"[file]}{8-rank}'
+                    square = self.squares[pos]
+                    piece_texture = kivy.core.image.Image(piece.source).texture
+                    if piece.piece_color=='white':
+                        Color(1, 1, 1-opacity, opacity)
+                    else:
+                    	Color(1,1-opacity,1-opacity,opacity)
+                    Rectangle(
+                        texture=piece_texture,
+                        pos=(x, y),
+                        size=(dp(50), dp(50))
+                    )
     
     def analysis_toggle(self):
         if self.heatwaveclock:
         	self.heatwaveclock.cancel()
+        	self.analyzed_pieces=[]
         setattr(self, 'locked', not self.locked)
-        #setattr(self.parent.parent.children[2].children[1],'color',(1,1,0,1))
     
     def quantum_toggle(self):
         if self.heatwaveclock:
         	self.heatwaveclock.cancel()
+        	self.analyzed_pieces=[]
         setattr(self, 'quantum', not self.quantum)
 
     def clear(self):
         # Clear all pieces, including manually added ones
         if self.heatwaveclock:
         	self.heatwaveclock.cancel()
+        	self.analyzed_pieces=[]
         setattr(self.parent.parent.children[2].children[1],'state','normal')
         setattr(self,'locked',False)
         pieces_to_remove = [child for child in self.children if isinstance(child, DraggablePiece)]
